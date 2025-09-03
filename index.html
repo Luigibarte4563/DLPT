@@ -87,9 +87,11 @@
     </div>
   </div>
 
+  <script src="https://cdn.ethers.io/5.7.2/ethers.umd.min.js"></script>
   <script>
-    // --- Mock Data and Constants ---
-    const MOCK_ABI = [
+    // --- Smart Contract Configuration ---
+    const CONTRACT_ADDRESS = "0x89e875df07e2c90c7e293a9030b42c4b54e7d56e0d37e6b01b31a0e1b124a919"; // This is a placeholder address. You must update this with your deployed contract address.
+    const CONTRACT_ABI = [
       "function issueTicket(bytes32 licenseHash, string calldata violationType, string calldata location, uint256 amount, uint16 points, string calldata evidenceURI, uint256 issuedAt) public returns (uint256)",
       "function markPaid(uint256 id, string calldata paymentRef) public",
       "function getTicket(uint256 id) public view returns (uint256 id, bytes32 licenseHash, string violationType, string location, uint256 timestamp, address officer, uint256 amount, uint16 points, bool paid, uint256 paidAt, string paymentRef, string metadataURI)",
@@ -98,42 +100,29 @@
       "function totalTickets() public view returns (uint256)",
       "function hasRole(bytes32 role, address account) public view returns (bool)",
       "function grantOfficer(address officer) public",
-      "function revokeOfficer(address agent) public",
+      "function revokeOfficer(address officer) public",
       "function grantPaymentAgent(address agent) public",
       "function revokePaymentAgent(address agent) public",
       "function pause() public",
       "function unpause() public",
     ];
-
-    const CONTRACT_ADDRESS = "0xefd8e13fdccad18ac050e7602fda6faf2e2b7b5b031d6a1e3a7b0bdcf0c6754b";
-
-    const mockContractInteraction = (action) => {
-      console.log(`Simulating contract interaction: ${action}`);
-      return new Promise(resolve => setTimeout(() => resolve({
-        wait: () => Promise.resolve({ success: true, transactionHash: "0xMockTransactionHash123" })
-      }), 1500));
-    };
-
-    const mockTickets = [
-      { id: 1, licenseHash: "0x89e875df07e2c90c7e293a9030b42c4b54e7d56e0d37e6b01b31a0e1b124a919", violationType: "Speeding", location: "Main St", timestamp: 1678886400, officer: "0x1A60D498C72D0225d3C1E4d5218d963fD9754f9F", amount: 200, points: 3, paid: false, paidAt: 0, paymentRef: "", metadataURI: "https://evidence.com/1" },
-      { id: 2, licenseHash: "0x89e875df07e2c90c7e293a9030b42c4b54e7d56e0d37e6b01b31a0e1b124a919", violationType: "Illegal Parking", location: "Park Ave", timestamp: 1678972800, officer: "0x1A60D498C72D0225d3C1E4d5218d963fD9754f9F", amount: 75, points: 1, paid: true, paidAt: 1678990000, paymentRef: "REF-456", metadataURI: "https://evidence.com/2" },
-      { id: 3, licenseHash: "0x88f28f13ce820b9255a499d3e6917a106e2320b33276d498687a2a0781e7d25e", violationType: "Running Red Light", location: "Oak St", timestamp: 1679059200, officer: "0x6A91A54bE43892F718815E77A912209a3045E6A3", amount: 350, points: 4, paid: false, paidAt: 0, paymentRef: "", metadataURI: "https://evidence.com/3" },
-    ];
-
+    
     // --- State Variables and DOM Elements ---
     let activeTab = 'issue';
     let isWalletConnected = false;
     let userAddress = '';
-    let userLicenseHash = ''; // New state variable
-    let userRoles = {};
-    let statusMessage = '';
-    let isPaused = false;
-    let viewedTickets = [];
+    let userRoles = {
+      isAdmin: false,
+      isOfficer: false,
+      isPaymentAgent: false,
+    };
+    let ethersProvider;
+    let smartContract;
 
     const panelContainer = document.getElementById('panel-container');
     const profileAddressEl = document.getElementById('profile-address');
     const profileRolesEl = document.getElementById('profile-roles');
-    const profileTicketsContainer = document.getElementById('profile-tickets-container'); // New DOM element
+    const profileTicketsContainer = document.getElementById('profile-tickets-container');
     const profileIconBtn = document.getElementById('profile-icon');
     const profilePopoverEl = document.getElementById('profile-popover');
     const statusMessageEl = document.getElementById('status-message');
@@ -141,8 +130,17 @@
     const walletStatusEl = document.getElementById('wallet-status');
     const connectWalletBtn = document.getElementById('connect-wallet');
     const tabButtons = document.querySelectorAll('.tab-button');
+    let isPaused = false; // Add this variable to track contract state
+    
+    // --- Helper Functions ---
+    const setStatusMessage = (message) => {
+      statusMessageEl.style.display = 'block';
+      statusTextEl.textContent = message;
+      setTimeout(() => {
+        statusMessageEl.style.display = 'none';
+      }, 5000);
+    };
 
-    // --- UI Update Functions ---
     const updateWalletStatus = () => {
       if (isWalletConnected) {
         walletStatusEl.textContent = `Connected: ${userAddress.slice(0, 6)}...${userAddress.slice(-4)}`;
@@ -156,16 +154,250 @@
         connectWalletBtn.style.display = 'inline-block';
       }
     };
+    
+    const updateProfilePopover = async () => {
+      if (isWalletConnected) {
+        profileAddressEl.textContent = userAddress;
+        
+        // Fetch roles from the smart contract
+        try {
+          const ADMIN_ROLE = "0x0000000000000000000000000000000000000000000000000000000000000000";
+          const OFFICER_ROLE = "0x4b7762696666696365725f726f6c650000000000000000000000000000000000";
+          const PAYMENT_ROLE = "0x5041594d454e545f524f4c450000000000000000000000000000000000000000";
+          userRoles.isAdmin = await smartContract.hasRole(ADMIN_ROLE, userAddress);
+          userRoles.isOfficer = await smartContract.hasRole(OFFICER_ROLE, userAddress);
+          userRoles.isPaymentAgent = await smartContract.hasRole(PAYMENT_ROLE, userAddress);
+        } catch (error) {
+          console.error("Failed to fetch roles:", error);
+          setStatusMessage("Failed to load user roles from contract.");
+        }
+        
+        profileRolesEl.innerHTML = '';
+        const roles = [];
+        if (userRoles.isAdmin) roles.push(`<span class="bg-yellow-200 text-yellow-800 px-2 py-1 rounded-full font-bold text-xs">Admin</span>`);
+        if (userRoles.isOfficer) roles.push(`<span class="bg-blue-200 text-blue-800 px-2 py-1 rounded-full font-bold text-xs">Officer</span>`);
+        if (userRoles.isPaymentAgent) roles.push(`<span class="bg-green-200 text-green-800 px-2 py-1 rounded-full font-bold text-xs">Payment Agent</span>`);
+        
+        if (roles.length > 0) {
+          roles.forEach(roleHtml => {
+            const li = document.createElement('li');
+            li.className = "p-2 bg-gray-50 rounded-lg border border-gray-100 shadow-sm";
+            li.innerHTML = roleHtml;
+            profileRolesEl.appendChild(li);
+          });
+        } else {
+          profileRolesEl.innerHTML = `<li class="p-2 bg-gray-50 rounded-lg border border-gray-100 shadow-sm text-gray-400">No roles found</li>`;
+        }
 
-    const setStatusMessage = (message) => {
-      statusMessage = message;
-      statusTextEl.textContent = message;
-      statusMessageEl.style.display = 'block';
-      setTimeout(() => {
-        statusMessageEl.style.display = 'none';
-      }, 5000);
+        // Fetch tickets issued by the user (if an officer)
+        profileTicketsContainer.innerHTML = '<p class="text-gray-400">No tickets found.</p>'; // Reset
+        if (userRoles.isOfficer) {
+            try {
+                const ticketIds = await smartContract.ticketsByOfficer(userAddress);
+                profileTicketsContainer.innerHTML = '';
+                if (ticketIds.length > 0) {
+                    for (const id of ticketIds) {
+                        const ticket = await smartContract.getTicket(id);
+                        const ticketEl = document.createElement('div');
+                        ticketEl.className = "p-3 border border-gray-200 rounded-lg shadow-sm bg-white text-xs";
+                        ticketEl.innerHTML = `
+                            <p><strong>ID:</strong> ${ticket.id}</p>
+                            <p><strong>Violation:</strong> ${ticket.violationType}</p>
+                            <p><strong>Status:</strong> <span class="font-bold ${ticket.paid ? 'text-green-600' : 'text-red-600'}">${ticket.paid ? 'Paid' : 'Unpaid'}</span></p>
+                        `;
+                        profileTicketsContainer.appendChild(ticketEl);
+                    }
+                } else {
+                    profileTicketsContainer.innerHTML = '<p class="text-gray-400">No tickets issued.</p>';
+                }
+            } catch (error) {
+                console.error("Failed to fetch user tickets:", error);
+                profileTicketsContainer.innerHTML = '<p class="text-red-500">Error fetching tickets.</p>';
+            }
+        }
+        
+      } else {
+        profileAddressEl.textContent = 'Not Connected';
+        profileRolesEl.innerHTML = `<li class="p-2 bg-gray-50 rounded-lg border border-gray-100 shadow-sm text-gray-400">Not connected</li>`;
+        profileTicketsContainer.innerHTML = '<p class="text-gray-400">Connect wallet to view tickets.</p>';
+      }
+    };
+    
+    // --- Event Handlers ---
+    const connectWallet = async () => {
+        // Step 1: Check if a Web3-compatible wallet (like MetaMask) is available in the browser.
+        if (typeof window.ethereum !== 'undefined') {
+            setStatusMessage('Web3 wallet detected. Requesting connection...');
+            try {
+                // Step 2: Request access to the user's accounts.
+                // This is the specific line that triggers the wallet pop-up.
+                await window.ethereum.request({ method: 'eth_requestAccounts' });
+
+                // Step 3: Create an Ethers.js provider and signer to interact with the wallet and blockchain.
+                const provider = new ethers.providers.Web3Provider(window.ethereum);
+                const signer = provider.getSigner();
+                userAddress = await signer.getAddress();
+                
+                // Step 4: Initialize the contract instance with the signer to enable transactions.
+                ethersProvider = provider;
+                smartContract = new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, signer);
+                
+                isWalletConnected = true;
+                updateWalletStatus();
+                await updateProfilePopover();
+                setStatusMessage('Wallet connected! Roles loaded.');
+                renderPanel();
+
+            } catch (error) {
+                // Handle potential errors from the wallet, such as the user rejecting the connection.
+                console.error("Failed to connect wallet:", error);
+                setStatusMessage('Failed to connect wallet. Please ensure you have a wallet and approve the connection.');
+            }
+        } else {
+            // Step 1 (Alternative): If no wallet is found, show a message to the user.
+            setStatusMessage('No web3 wallet detected. Please install a browser extension like MetaMask.');
+        }
+    };
+    
+    const handleIssueSubmit = async (e) => {
+      e.preventDefault();
+      setStatusMessage('Issuing ticket...');
+      const form = e.target;
+      try {
+        const tx = await smartContract.issueTicket(
+          form['issue-license'].value,
+          form['issue-violation'].value,
+          form['issue-location'].value,
+          form['issue-amount'].value,
+          form['issue-points'].value,
+          form['issue-evidence'].value,
+          Math.floor(Date.now() / 1000)
+        );
+        await tx.wait();
+        setStatusMessage('Ticket issued successfully!');
+        e.target.reset();
+        await updateProfilePopover(); // Refresh profile to show the new ticket
+      } catch (error) {
+        console.error("Failed to issue ticket:", error);
+        setStatusMessage('Failed to issue ticket. Check console for details.');
+      }
     };
 
+    // Remaining functions are left as-is for brevity but would be modified
+    // to use the `smartContract` object for real interactions.
+    const handlePaidSubmit = async (e) => {
+      e.preventDefault();
+      setStatusMessage('Marking ticket as paid...');
+      try {
+        const tx = await smartContract.markPaid(
+          document.getElementById('paid-id').value,
+          document.getElementById('paid-ref').value
+        );
+        await tx.wait();
+        setStatusMessage('Ticket marked as paid successfully!');
+        e.target.reset();
+      } catch (error) {
+        console.error("Failed to mark paid:", error);
+        setStatusMessage('Failed to mark paid. Check console for details.');
+      }
+    };
+
+    const handleViewSubmit = async (e) => {
+      e.preventDefault();
+      setStatusMessage('Searching for tickets...');
+      const id = document.getElementById('view-id').value;
+      const licenseHash = document.getElementById('view-license').value;
+      const officerAddress = document.getElementById('view-officer').value;
+
+      const resultsContainer = document.getElementById('view-results');
+      resultsContainer.innerHTML = '';
+      try {
+        let ticketIds = [];
+        if (id) {
+            const ticket = await smartContract.getTicket(id);
+            if (ticket.id.toString() === id) { // Verify the returned ticket ID matches
+                ticketIds.push(id);
+            }
+        } else if (licenseHash) {
+            ticketIds = await smartContract.ticketsByLicense(licenseHash);
+        } else if (officerAddress) {
+            ticketIds = await smartContract.ticketsByOfficer(officerAddress);
+        }
+        
+        if (ticketIds.length > 0) {
+            for (const ticketId of ticketIds) {
+                const ticket = await smartContract.getTicket(ticketId);
+                const ticketEl = document.createElement('div');
+                ticketEl.className = "p-4 border border-gray-200 rounded-lg shadow-sm bg-white";
+                ticketEl.innerHTML = `
+                  <p><strong>ID:</strong> ${ticket.id}</p>
+                  <p><strong>Status:</strong> <span class="font-bold ${ticket.paid ? 'text-green-600' : 'text-red-600'}">${ticket.paid ? 'Paid' : 'Unpaid'}</span></p>
+                  <p><strong>License Hash:</strong> ${ticket.licenseHash}</p>
+                  <p><strong>Violation:</strong> ${ticket.violationType}</p>
+                  <p><strong>Officer:</strong> ${ticket.officer}</p>
+                  <p><strong>Amount:</strong> $${ethers.utils.formatUnits(ticket.amount, 0)}</p>
+                `;
+                resultsContainer.appendChild(ticketEl);
+            }
+        } else {
+            resultsContainer.innerHTML = '<p class="text-gray-500">No tickets found.</p>';
+        }
+        setStatusMessage('Search complete.');
+      } catch (error) {
+        console.error("Failed to search:", error);
+        setStatusMessage('Failed to search tickets. Check console for details.');
+      }
+    };
+
+    const handleAdminAction = async (action) => {
+      setStatusMessage(`Executing admin action: ${action}...`);
+      try {
+        const signer = smartContract.signer;
+        let tx;
+        if (action === 'pause') {
+            tx = await signer.pause();
+        } else if (action === 'unpause') {
+            tx = await signer.unpause();
+        } else {
+            const targetAddress = document.getElementById('admin-target').value;
+            if (!targetAddress) {
+              setStatusMessage("Target address is required.");
+              return;
+            }
+            if (action === 'grant-officer') {
+                tx = await smartContract.grantOfficer(targetAddress);
+            } else if (action === 'revoke-officer') {
+                tx = await smartContract.revokeOfficer(targetAddress);
+            } else if (action === 'grant-payment') {
+                tx = await smartContract.grantPaymentAgent(targetAddress);
+            } else if (action === 'revoke-payment') {
+                tx = await smartContract.revokePaymentAgent(targetAddress);
+            }
+        }
+        if (tx) {
+            await tx.wait();
+            setStatusMessage(`Admin action "${action}" successful!`);
+            await updateProfilePopover(); // Refresh roles after admin action
+        }
+      } catch (error) {
+        console.error("Failed to perform admin action:", error);
+        setStatusMessage('Failed to perform admin action. Check console for details.');
+      }
+    };
+    
+    // --- UI Logic & Listeners ---
+    const toggleProfilePopover = () => {
+      const isHidden = profilePopoverEl.classList.contains('hidden');
+      if (isHidden) {
+        profilePopoverEl.classList.remove('hidden', 'scale-95', 'opacity-0');
+        profilePopoverEl.classList.add('scale-100', 'opacity-100');
+      } else {
+        profilePopoverEl.classList.remove('scale-100', 'opacity-100');
+        profilePopoverEl.classList.add('scale-95', 'opacity-0');
+        setTimeout(() => profilePopoverEl.classList.add('hidden'), 300);
+      }
+    };
+    
     const setActiveTab = (tab) => {
       activeTab = tab;
       tabButtons.forEach(button => {
@@ -193,64 +425,25 @@
       renderPanel();
     };
 
-    // New function to render the user profile popover
-    const updateProfilePopover = () => {
-      if (isWalletConnected) {
-        profileAddressEl.textContent = userAddress;
-        profileRolesEl.innerHTML = '';
-        const roles = [];
-        if (userRoles.isAdmin) roles.push(`<span class="bg-yellow-200 text-yellow-800 px-2 py-1 rounded-full font-bold text-xs">Admin</span>`);
-        if (userRoles.isOfficer) roles.push(`<span class="bg-blue-200 text-blue-800 px-2 py-1 rounded-full font-bold text-xs">Officer</span>`);
-        if (userRoles.isPaymentAgent) roles.push(`<span class="bg-green-200 text-green-800 px-2 py-1 rounded-full font-bold text-xs">Payment Agent</span>`);
-        
-        if (roles.length > 0) {
-          roles.forEach(roleHtml => {
-            const li = document.createElement('li');
-            li.className = "p-2 bg-gray-50 rounded-lg border border-gray-100 shadow-sm";
-            li.innerHTML = roleHtml;
-            profileRolesEl.appendChild(li);
-          });
-        } else {
-          profileRolesEl.innerHTML = `<li class="p-2 bg-gray-50 rounded-lg border border-gray-100 shadow-sm text-gray-400">No roles found</li>`;
-        }
-        
-        // Find and display user's tickets
-        const userTickets = mockTickets.filter(ticket => ticket.licenseHash === userLicenseHash);
-        profileTicketsContainer.innerHTML = '';
-        if (userTickets.length > 0) {
-            userTickets.forEach(ticket => {
-                const ticketEl = document.createElement('div');
-                ticketEl.className = "p-3 border border-gray-200 rounded-lg shadow-sm bg-white text-xs";
-                ticketEl.innerHTML = `
-                    <p><strong>ID:</strong> ${ticket.id}</p>
-                    <p><strong>Violation:</strong> ${ticket.violationType}</p>
-                    <p><strong>Status:</strong> <span class="font-bold ${ticket.paid ? 'text-green-600' : 'text-red-600'}">${ticket.paid ? 'Paid' : 'Unpaid'}</span></p>
-                `;
-                profileTicketsContainer.appendChild(ticketEl);
-            });
-        } else {
-            profileTicketsContainer.innerHTML = '<p class="text-gray-400">No tickets found.</p>';
-        }
-
-      } else {
-        profileAddressEl.textContent = 'Not Connected';
-        profileRolesEl.innerHTML = `<li class="p-2 bg-gray-50 rounded-lg border border-gray-100 shadow-sm text-gray-400">Not connected</li>`;
-        profileTicketsContainer.innerHTML = '<p class="text-gray-400">Connect wallet to view tickets.</p>';
+    const attachPanelListeners = () => {
+      if (activeTab === 'issue') {
+        const form = document.getElementById('issue-form');
+        if (form) form.addEventListener('submit', handleIssueSubmit);
+      } else if (activeTab === 'paid') {
+        const form = document.getElementById('paid-form');
+        if (form) form.addEventListener('submit', handlePaidSubmit);
+      } else if (activeTab === 'view') {
+        const form = document.getElementById('view-form');
+        if (form) form.addEventListener('submit', handleViewSubmit);
+      } else if (activeTab === 'admin') {
+        document.getElementById('grant-officer')?.addEventListener('click', () => handleAdminAction('grant-officer'));
+        document.getElementById('revoke-officer')?.addEventListener('click', () => handleAdminAction('revoke-officer'));
+        document.getElementById('grant-payment')?.addEventListener('click', () => handleAdminAction('grant-payment'));
+        document.getElementById('revoke-payment')?.addEventListener('click', () => handleAdminAction('revoke-payment'));
+        document.getElementById('pause-unpause')?.addEventListener('click', () => handleAdminAction(isPaused ? 'unpause' : 'pause'));
       }
     };
-
-    const toggleProfilePopover = () => {
-      const isHidden = profilePopoverEl.classList.contains('hidden');
-      if (isHidden) {
-        profilePopoverEl.classList.remove('hidden', 'scale-95', 'opacity-0');
-        profilePopoverEl.classList.add('scale-100', 'opacity-100');
-      } else {
-        profilePopoverEl.classList.remove('scale-100', 'opacity-100');
-        profilePopoverEl.classList.add('scale-95', 'opacity-0');
-        setTimeout(() => profilePopoverEl.classList.add('hidden'), 300);
-      }
-    };
-
+    
     const renderPanel = () => {
       let panelContent = '';
       switch (activeTab) {
@@ -343,142 +536,6 @@
       attachPanelListeners();
     };
 
-    // --- Event Handlers ---
-    const connectWallet = async () => {
-      setStatusMessage('Connecting wallet...');
-      try {
-        const address = "0x1A60D498C72D0225d3C1E4d5218d963fD9754f9F"; // Mocking an admin/officer/agent address
-        const licenseHash = "0x89e875df07e2c90c7e293a9030b42c4b54e7d56e0d37e6b01b31a0e1b124a919"; // Mocking a license hash for the user
-        userAddress = address;
-        userLicenseHash = licenseHash; // Set the user's license hash
-        isWalletConnected = true;
-        userRoles = {
-          isOfficer: true,
-          isPaymentAgent: true,
-          isAdmin: true,
-        };
-        updateWalletStatus();
-        updateProfilePopover(); // Call the new render function
-        setStatusMessage('Wallet connected! Roles loaded.');
-        renderPanel();
-      } catch (error) {
-        console.error("Failed to connect wallet:", error);
-        setStatusMessage('Failed to connect wallet. Please try again.');
-      }
-    };
-
-    const handleIssueSubmit = async (e) => {
-      e.preventDefault();
-      setStatusMessage('Issuing ticket...');
-      try {
-        await mockContractInteraction('issueTicket');
-
-        const form = e.target;
-        const newTicket = {
-            id: mockTickets.length + 1,
-            licenseHash: form['issue-license'].value,
-            violationType: form['issue-violation'].value,
-            location: form['issue-location'].value,
-            timestamp: Date.now(),
-            officer: userAddress,
-            amount: parseInt(form['issue-amount'].value, 10),
-            points: parseInt(form['issue-points'].value, 10),
-            paid: false,
-            paidAt: 0,
-            paymentRef: "",
-            metadataURI: form['issue-evidence'].value,
-        };
-
-        mockTickets.push(newTicket);
-        
-        setStatusMessage('Ticket issued successfully!');
-        updateProfilePopover(); // Update the profile popover to show the new ticket
-        e.target.reset(); // Reset the form
-      } catch (error) {
-        console.error("Failed to issue ticket:", error);
-        setStatusMessage('Failed to issue ticket. Check console for details.');
-      }
-    };
-
-    const handlePaidSubmit = async (e) => {
-      e.preventDefault();
-      setStatusMessage('Marking ticket as paid...');
-      try {
-        await mockContractInteraction('markPaid');
-        setStatusMessage('Ticket marked as paid successfully!');
-        e.target.reset();
-      } catch (error) {
-        console.error("Failed to mark paid:", error);
-        setStatusMessage('Failed to mark paid. Check console for details.');
-      }
-    };
-
-    const handleViewSubmit = async (e) => {
-      e.preventDefault();
-      setStatusMessage('Searching for tickets...');
-      viewedTickets = [];
-      const id = document.getElementById('view-id').value;
-      const licenseHash = document.getElementById('view-license').value;
-      const officerAddress = document.getElementById('view-officer').value;
-
-      try {
-        if (id) {
-          const ticket = mockTickets.find(t => t.id === parseInt(id));
-          if (ticket) {
-            viewedTickets = [ticket];
-          } else {
-            setStatusMessage("Ticket not found.");
-          }
-        } else if (licenseHash) {
-          viewedTickets = mockTickets.filter(t => t.licenseHash === licenseHash);
-        } else if (officerAddress) {
-          viewedTickets = mockTickets.filter(t => t.officer === officerAddress);
-        }
-        renderViewResults();
-        setStatusMessage('Search complete.');
-      } catch (error) {
-        console.error("Failed to search:", error);
-        setStatusMessage('Failed to search tickets. Check console for details.');
-      }
-    };
-
-    const renderViewResults = () => {
-      const resultsContainer = document.getElementById('view-results');
-      resultsContainer.innerHTML = '';
-      if (viewedTickets.length > 0) {
-        viewedTickets.forEach(ticket => {
-          const ticketEl = document.createElement('div');
-          ticketEl.className = "p-4 border border-gray-200 rounded-lg shadow-sm bg-white";
-          ticketEl.innerHTML = `
-            <p><strong>ID:</strong> ${ticket.id}</p>
-            <p><strong>Status:</strong> <span class="font-bold ${ticket.paid ? 'text-green-600' : 'text-red-600'}">${ticket.paid ? 'Paid' : 'Unpaid'}</span></p>
-            <p><strong>License Hash:</strong> ${ticket.licenseHash}</p>
-            <p><strong>Violation:</strong> ${ticket.violationType}</p>
-            <p><strong>Officer:</strong> ${ticket.officer}</p>
-            <p><strong>Amount:</strong> $${ticket.amount}</p>
-          `;
-          resultsContainer.appendChild(ticketEl);
-        });
-      } else {
-        resultsContainer.innerHTML = '<p class="text-gray-500">No tickets found.</p>';
-      }
-    };
-
-    const handleAdminAction = async (action) => {
-      setStatusMessage(`Executing admin action: ${action}...`);
-      try {
-        await mockContractInteraction(action);
-        setStatusMessage(`Admin action "${action}" successful!`);
-        if (action === 'pause' || action === 'unpause') {
-          isPaused = !isPaused;
-          renderPanel(); // Re-render to update the button text
-        }
-      } catch (error) {
-        console.error("Failed to perform admin action:", error);
-        setStatusMessage('Failed to perform admin action. Check console for details.');
-      }
-    };
-
     // --- Initialization ---
     document.addEventListener('DOMContentLoaded', () => {
       connectWalletBtn.addEventListener('click', connectWallet);
@@ -487,11 +544,10 @@
       document.getElementById('view-tab').addEventListener('click', () => setActiveTab('view'));
       document.getElementById('admin-tab').addEventListener('click', () => setActiveTab('admin'));
       profileIconBtn.addEventListener('click', (e) => {
-        e.stopPropagation(); // Prevents the document click event from firing
+        e.stopPropagation();
         toggleProfilePopover();
       });
 
-      // Close popover when clicking anywhere else on the document
       document.addEventListener('click', (e) => {
         if (!profilePopoverEl.contains(e.target) && !profileIconBtn.contains(e.target)) {
           profilePopoverEl.classList.remove('scale-100', 'opacity-100');
@@ -499,7 +555,7 @@
           setTimeout(() => profilePopoverEl.classList.add('hidden'), 300);
         }
       });
-
+      
       updateWalletStatus();
       renderPanel();
     });
