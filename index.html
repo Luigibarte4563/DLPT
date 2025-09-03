@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DLPT Violation Ledger</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    body {
+      font-family: 'Inter', sans-serif;
+    }
+  </style>
+</head>
+<body class="bg-gray-100 p-4 sm:p-8 min-h-screen">
+  <div class="container mx-auto max-w-7xl bg-white rounded-xl shadow-lg overflow-hidden relative">
+    <header class="bg-gray-800 text-white p-6 flex flex-col sm:flex-row justify-between items-center rounded-t-xl">
+      <h1 class="text-2xl sm:text-3xl font-extrabold tracking-tight mb-4 sm:mb-0">Violation Ledger</h1>
+      <!-- Responsive Wallet Status -->
+      <div class="text-sm font-mono flex flex-col sm:flex-row items-center gap-2">
+        <span id="wallet-status" class="bg-red-500 px-3 py-1 rounded-full text-xs font-semibold">
+          Wallet Not Connected
+        </span>
+        <button id="connect-wallet" class="bg-blue-500 hover:bg-blue-600 transition-colors text-white px-4 py-2 rounded-lg">
+          Connect Wallet
+        </button>
+      </div>
+    </header>
+
+    <nav class="flex flex-wrap justify-around bg-gray-200 p-4 shadow-md gap-2">
+      <button id="issue-tab" class="tab-button font-semibold py-2 px-4 rounded-lg transition-transform hover:scale-105 bg-blue-500 text-white shadow-md">
+        Issue Ticket
+      </button>
+      <button id="paid-tab" class="tab-button font-semibold py-2 px-4 rounded-lg transition-transform hover:scale-105 text-gray-800">
+        Mark Paid
+      </button>
+      <button id="view-tab" class="tab-button font-semibold py-2 px-4 rounded-lg transition-transform hover:scale-105 text-gray-800">
+        View Tickets
+      </button>
+      <button id="admin-tab" class="tab-button font-semibold py-2 px-4 rounded-lg transition-transform hover:scale-105 text-gray-800">
+        Admin Panel
+      </button>
+    </nav>
+
+    <main class="p-4 sm:p-8">
+      <div id="panel-container"></div>
+    </main>
+    
+    <!-- Floating Profile Icon and Popover -->
+    <div class="fixed top-4 right-4 z-50">
+        <!-- Profile Icon -->
+        <button id="profile-icon" class="w-12 h-12 rounded-full bg-blue-500 text-white flex items-center justify-center text-xl font-bold hover:bg-blue-600 transition-colors shadow-lg">
+          👤
+        </button>
+
+        <!-- Profile Popover - now always near the button -->
+        <div id="profile-popover" class="hidden absolute top-14 right-0 max-w-xs w-80 bg-white rounded-lg shadow-xl p-6 border border-gray-200 transition-transform duration-300 scale-95 opacity-0">
+          <h2 class="text-xl font-bold mb-4 text-gray-800">My Profile</h2>
+          <div class="space-y-4 text-sm text-gray-600">
+            <div class="p-3 bg-gray-50 rounded-lg border border-gray-100 shadow-sm font-mono break-all">
+              <span class="font-bold text-gray-800">Address:</span>
+              <p id="profile-address" class="mt-1 text-xs text-blue-500 break-all"></p>
+            </div>
+            <div>
+              <span class="font-bold text-gray-800">Roles:</span>
+              <ul id="profile-roles" class="mt-2 space-y-2">
+                <li class="p-2 bg-gray-50 rounded-lg border border-gray-100 shadow-sm text-gray-400">Not connected</li>
+              </ul>
+            </div>
+          </div>
+          
+          <hr class="my-4 border-gray-200" />
+          
+          <div>
+              <h3 class="font-bold text-lg mb-2 text-gray-800">My Tickets</h3>
+              <div id="profile-tickets-container" class="space-y-3 max-h-48 overflow-y-auto">
+                  <p class="text-gray-400">No tickets found.</p>
+              </div>
+          </div>
+        </div>
+    </div>
+
+    <div id="status-message" class="bg-gray-100 p-4 text-center text-gray-700 border-t border-gray-200" style="display: none;">
+      <p id="status-text"></p>
+    </div>
+  </div>
+
+  <script>
+    // --- Mock Data and Constants ---
+    const MOCK_ABI = [
+      "function issueTicket(bytes32 licenseHash, string calldata violationType, string calldata location, uint256 amount, uint16 points, string calldata evidenceURI, uint256 issuedAt) public returns (uint256)",
+      "function markPaid(uint256 id, string calldata paymentRef) public",
+      "function getTicket(uint256 id) public view returns (uint256 id, bytes32 licenseHash, string violationType, string location, uint256 timestamp, address officer, uint256 amount, uint16 points, bool paid, uint256 paidAt, string paymentRef, string metadataURI)",
+      "function ticketsByLicense(bytes32 licenseHash) public view returns (uint256[] memory)",
+      "function ticketsByOfficer(address officer) public view returns (uint256[] memory)",
+      "function totalTickets() public view returns (uint256)",
+      "function hasRole(bytes32 role, address account) public view returns (bool)",
+      "function grantOfficer(address officer) public",
+      "function revokeOfficer(address agent) public",
+      "function grantPaymentAgent(address agent) public",
+      "function revokePaymentAgent(address agent) public",
+      "function pause() public",
+      "function unpause() public",
+    ];
+
+    const CONTRACT_ADDRESS = "0xefd8e13fdccad18ac050e7602fda6faf2e2b7b5b031d6a1e3a7b0bdcf0c6754b";
+
+    const mockContractInteraction = (action) => {
+      console.log(`Simulating contract interaction: ${action}`);
+      return new Promise(resolve => setTimeout(() => resolve({
+        wait: () => Promise.resolve({ success: true, transactionHash: "0xMockTransactionHash123" })
+      }), 1500));
+    };
+
+    const mockTickets = [
+      { id: 1, licenseHash: "0x89e875df07e2c90c7e293a9030b42c4b54e7d56e0d37e6b01b31a0e1b124a919", violationType: "Speeding", location: "Main St", timestamp: 1678886400, officer: "0x1A60D498C72D0225d3C1E4d5218d963fD9754f9F", amount: 200, points: 3, paid: false, paidAt: 0, paymentRef: "", metadataURI: "https://evidence.com/1" },
+      { id: 2, licenseHash: "0x89e875df07e2c90c7e293a9030b42c4b54e7d56e0d37e6b01b31a0e1b124a919", violationType: "Illegal Parking", location: "Park Ave", timestamp: 1678972800, officer: "0x1A60D498C72D0225d3C1E4d5218d963fD9754f9F", amount: 75, points: 1, paid: true, paidAt: 1678990000, paymentRef: "REF-456", metadataURI: "https://evidence.com/2" },
+      { id: 3, licenseHash: "0x88f28f13ce820b9255a499d3e6917a106e2320b33276d498687a2a0781e7d25e", violationType: "Running Red Light", location: "Oak St", timestamp: 1679059200, officer: "0x6A91A54bE43892F718815E77A912209a3045E6A3", amount: 350, points: 4, paid: false, paidAt: 0, paymentRef: "", metadataURI: "https://evidence.com/3" },
+    ];
+
+    // --- State Variables and DOM Elements ---
+    let activeTab = 'issue';
+    let isWalletConnected = false;
+    let userAddress = '';
+    let userLicenseHash = ''; // New state variable
+    let userRoles = {};
+    let statusMessage = '';
+    let isPaused = false;
+    let viewedTickets = [];
+
+    const panelContainer = document.getElementById('panel-container');
+    const profileAddressEl = document.getElementById('profile-address');
+    const profileRolesEl = document.getElementById('profile-roles');
+    const profileTicketsContainer = document.getElementById('profile-tickets-container'); // New DOM element
+    const profileIconBtn = document.getElementById('profile-icon');
+    const profilePopoverEl = document.getElementById('profile-popover');
+    const statusMessageEl = document.getElementById('status-message');
+    const statusTextEl = document.getElementById('status-text');
+    const walletStatusEl = document.getElementById('wallet-status');
+    const connectWalletBtn = document.getElementById('connect-wallet');
+    const tabButtons = document.querySelectorAll('.tab-button');
+
+    // --- UI Update Functions ---
+    const updateWalletStatus = () => {
+      if (isWalletConnected) {
+        walletStatusEl.textContent = `Connected: ${userAddress.slice(0, 6)}...${userAddress.slice(-4)}`;
+        walletStatusEl.classList.remove('bg-red-500');
+        walletStatusEl.classList.add('bg-green-500');
+        connectWalletBtn.style.display = 'none';
+      } else {
+        walletStatusEl.textContent = 'Wallet Not Connected';
+        walletStatusEl.classList.remove('bg-green-500');
+        walletStatusEl.classList.add('bg-red-500');
+        connectWalletBtn.style.display = 'inline-block';
+      }
+    };
+
+    const setStatusMessage = (message) => {
+      statusMessage = message;
+      statusTextEl.textContent = message;
+      statusMessageEl.style.display = 'block';
+      setTimeout(() => {
+        statusMessageEl.style.display = 'none';
+      }, 5000);
+    };
+
+    const setActiveTab = (tab) => {
+      activeTab = tab;
+      tabButtons.forEach(button => {
+        button.classList.remove('bg-blue-500', 'bg-green-500', 'bg-purple-500', 'bg-yellow-500', 'text-white', 'shadow-md');
+        button.classList.add('text-gray-800');
+        if (button.id.startsWith(tab)) {
+          let color = '';
+          switch (tab) {
+            case 'issue':
+              color = 'blue';
+              break;
+            case 'paid':
+              color = 'green';
+              break;
+            case 'view':
+              color = 'purple';
+              break;
+            case 'admin':
+              color = 'yellow';
+              break;
+          }
+          button.classList.add(`bg-${color}-500`, 'text-white', 'shadow-md');
+        }
+      });
+      renderPanel();
+    };
+
+    // New function to render the user profile popover
+    const updateProfilePopover = () => {
+      if (isWalletConnected) {
+        profileAddressEl.textContent = userAddress;
+        profileRolesEl.innerHTML = '';
+        const roles = [];
+        if (userRoles.isAdmin) roles.push(`<span class="bg-yellow-200 text-yellow-800 px-2 py-1 rounded-full font-bold text-xs">Admin</span>`);
+        if (userRoles.isOfficer) roles.push(`<span class="bg-blue-200 text-blue-800 px-2 py-1 rounded-full font-bold text-xs">Officer</span>`);
+        if (userRoles.isPaymentAgent) roles.push(`<span class="bg-green-200 text-green-800 px-2 py-1 rounded-full font-bold text-xs">Payment Agent</span>`);
+        
+        if (roles.length > 0) {
+          roles.forEach(roleHtml => {
+            const li = document.createElement('li');
+            li.className = "p-2 bg-gray-50 rounded-lg border border-gray-100 shadow-sm";
+            li.innerHTML = roleHtml;
+            profileRolesEl.appendChild(li);
+          });
+        } else {
+          profileRolesEl.innerHTML = `<li class="p-2 bg-gray-50 rounded-lg border border-gray-100 shadow-sm text-gray-400">No roles found</li>`;
+        }
+        
+        // Find and display user's tickets
+        const userTickets = mockTickets.filter(ticket => ticket.licenseHash === userLicenseHash);
+        profileTicketsContainer.innerHTML = '';
+        if (userTickets.length > 0) {
+            userTickets.forEach(ticket => {
+                const ticketEl = document.createElement('div');
+                ticketEl.className = "p-3 border border-gray-200 rounded-lg shadow-sm bg-white text-xs";
+                ticketEl.innerHTML = `
+                    <p><strong>ID:</strong> ${ticket.id}</p>
+                    <p><strong>Violation:</strong> ${ticket.violationType}</p>
+                    <p><strong>Status:</strong> <span class="font-bold ${ticket.paid ? 'text-green-600' : 'text-red-600'}">${ticket.paid ? 'Paid' : 'Unpaid'}</span></p>
+                `;
+                profileTicketsContainer.appendChild(ticketEl);
+            });
+        } else {
+            profileTicketsContainer.innerHTML = '<p class="text-gray-400">No tickets found.</p>';
+        }
+
+      } else {
+        profileAddressEl.textContent = 'Not Connected';
+        profileRolesEl.innerHTML = `<li class="p-2 bg-gray-50 rounded-lg border border-gray-100 shadow-sm text-gray-400">Not connected</li>`;
+        profileTicketsContainer.innerHTML = '<p class="text-gray-400">Connect wallet to view tickets.</p>';
+      }
+    };
+
+    const toggleProfilePopover = () => {
+      const isHidden = profilePopoverEl.classList.contains('hidden');
+      if (isHidden) {
+        profilePopoverEl.classList.remove('hidden', 'scale-95', 'opacity-0');
+        profilePopoverEl.classList.add('scale-100', 'opacity-100');
+      } else {
+        profilePopoverEl.classList.remove('scale-100', 'opacity-100');
+        profilePopoverEl.classList.add('scale-95', 'opacity-0');
+        setTimeout(() => profilePopoverEl.classList.add('hidden'), 300);
+      }
+    };
+
+    const renderPanel = () => {
+      let panelContent = '';
+      switch (activeTab) {
+        case 'issue':
+          panelContent = `
+            <div class="p-8 bg-gray-50 rounded-lg shadow-inner">
+              <h2 class="text-2xl font-bold mb-4 text-gray-800">Issue New Ticket</h2>
+              ${userRoles.isOfficer ? `
+              <form id="issue-form" class="space-y-4">
+                <input type="text" id="issue-license" placeholder="License Hash (bytes32)" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" required />
+                <input type="text" id="issue-violation" placeholder="Violation Type" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" required />
+                <input type="text" id="issue-location" placeholder="Location" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                <input type="number" id="issue-amount" placeholder="Amount" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" required />
+                <input type="number" id="issue-points" placeholder="Points" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" required />
+                <input type="text" id="issue-evidence" placeholder="Evidence URI" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                <button type="submit" class="w-full bg-blue-600 text-white font-bold py-3 px-6 rounded-lg hover:bg-blue-700 transition-colors shadow-lg">
+                  Issue Ticket
+                </button>
+              </form>
+              ` : `
+              <p class="text-red-500 font-medium">You must have the OFFICER_ROLE to issue a ticket.</p>
+              `}
+            </div>
+          `;
+          break;
+        case 'paid':
+          panelContent = `
+            <div class="p-8 bg-gray-50 rounded-lg shadow-inner">
+              <h2 class="text-2xl font-bold mb-4 text-gray-800">Mark Ticket as Paid</h2>
+              ${userRoles.isPaymentAgent ? `
+              <form id="paid-form" class="space-y-4">
+                <input type="number" id="paid-id" placeholder="Ticket ID" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500" required />
+                <input type="text" id="paid-ref" placeholder="Payment Reference" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500" required />
+                <button type="submit" class="w-full bg-green-600 text-white font-bold py-3 px-6 rounded-lg hover:bg-green-700 transition-colors shadow-lg">
+                  Mark as Paid
+                </button>
+              </form>
+              ` : `
+              <p class="text-red-500 font-medium">You must have the PAYMENT_ROLE to mark a ticket as paid.</p>
+              `}
+            </div>
+          `;
+          break;
+        case 'view':
+          panelContent = `
+            <div class="p-8 bg-gray-50 rounded-lg shadow-inner">
+              <h2 class="text-2xl font-bold mb-4 text-gray-800">View Tickets</h2>
+              <form id="view-form" class="space-y-4 mb-8">
+                <input type="text" id="view-id" placeholder="Search by Ticket ID" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500" />
+                <input type="text" id="view-license" placeholder="Search by License Hash" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500" />
+                <input type="text" id="view-officer" placeholder="Search by Officer Address" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500" />
+                <button type="submit" class="w-full bg-purple-600 text-white font-bold py-3 px-6 rounded-lg hover:bg-purple-700 transition-colors shadow-lg">
+                  Search
+                </button>
+              </form>
+              <h3 class="text-xl font-bold mb-2 text-gray-800">Results</h3>
+              <div id="view-results" class="space-y-4"></div>
+            </div>
+          `;
+          break;
+        case 'admin':
+          panelContent = `
+            <div class="p-8 bg-gray-50 rounded-lg shadow-inner">
+              <h2 class="text-2xl font-bold mb-4 text-gray-800">Admin Panel</h2>
+              ${userRoles.isAdmin ? `
+              <div class="space-y-6">
+                <div class="flex flex-col space-y-4">
+                  <input type="text" id="admin-target" placeholder="Target Address" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-yellow-500" />
+                  <div class="grid grid-cols-2 gap-4">
+                    <button id="grant-officer" class="bg-yellow-600 text-white font-bold py-3 px-6 rounded-lg hover:bg-yellow-700 transition-colors shadow-lg">Grant Officer</button>
+                    <button id="revoke-officer" class="bg-red-600 text-white font-bold py-3 px-6 rounded-lg hover:bg-red-700 transition-colors shadow-lg">Revoke Officer</button>
+                    <button id="grant-payment" class="bg-yellow-600 text-white font-bold py-3 px-6 rounded-lg hover:bg-yellow-700 transition-colors shadow-lg">Grant Payment Agent</button>
+                    <button id="revoke-payment" class="bg-red-600 text-white font-bold py-3 px-6 rounded-lg hover:bg-red-700 transition-colors shadow-lg">Revoke Payment Agent</button>
+                  </div>
+                </div>
+                <hr class="border-gray-300" />
+                <div class="flex justify-between items-center">
+                  <span class="font-medium">Contract Status: <span id="contract-status">${isPaused ? 'Paused' : 'Active'}</span></span>
+                  <button id="pause-unpause" class="font-bold py-3 px-6 rounded-lg transition-colors shadow-lg ${isPaused ? 'bg-green-600 hover:bg-green-700' : 'bg-red-600 hover:bg-red-700'} text-white">${isPaused ? 'Unpause' : 'Pause'}</button>
+                </div>
+              </div>
+              ` : `
+              <p class="text-red-500 font-medium">You must have the DEFAULT_ADMIN_ROLE to access this panel.</p>
+              `}
+            </div>
+          `;
+          break;
+      }
+      panelContainer.innerHTML = panelContent;
+      attachPanelListeners();
+    };
+
+    // --- Event Handlers ---
+    const connectWallet = async () => {
+      setStatusMessage('Connecting wallet...');
+      try {
+        const address = "0x1A60D498C72D0225d3C1E4d5218d963fD9754f9F"; // Mocking an admin/officer/agent address
+        const licenseHash = "0x89e875df07e2c90c7e293a9030b42c4b54e7d56e0d37e6b01b31a0e1b124a919"; // Mocking a license hash for the user
+        userAddress = address;
+        userLicenseHash = licenseHash; // Set the user's license hash
+        isWalletConnected = true;
+        userRoles = {
+          isOfficer: true,
+          isPaymentAgent: true,
+          isAdmin: true,
+        };
+        updateWalletStatus();
+        updateProfilePopover(); // Call the new render function
+        setStatusMessage('Wallet connected! Roles loaded.');
+        renderPanel();
+      } catch (error) {
+        console.error("Failed to connect wallet:", error);
+        setStatusMessage('Failed to connect wallet. Please try again.');
+      }
+    };
+
+    const handleIssueSubmit = async (e) => {
+      e.preventDefault();
+      setStatusMessage('Issuing ticket...');
+      try {
+        await mockContractInteraction('issueTicket');
+
+        const form = e.target;
+        const newTicket = {
+            id: mockTickets.length + 1,
+            licenseHash: form['issue-license'].value,
+            violationType: form['issue-violation'].value,
+            location: form['issue-location'].value,
+            timestamp: Date.now(),
+            officer: userAddress,
+            amount: parseInt(form['issue-amount'].value, 10),
+            points: parseInt(form['issue-points'].value, 10),
+            paid: false,
+            paidAt: 0,
+            paymentRef: "",
+            metadataURI: form['issue-evidence'].value,
+        };
+
+        mockTickets.push(newTicket);
+        
+        setStatusMessage('Ticket issued successfully!');
+        updateProfilePopover(); // Update the profile popover to show the new ticket
+        e.target.reset(); // Reset the form
+      } catch (error) {
+        console.error("Failed to issue ticket:", error);
+        setStatusMessage('Failed to issue ticket. Check console for details.');
+      }
+    };
+
+    const handlePaidSubmit = async (e) => {
+      e.preventDefault();
+      setStatusMessage('Marking ticket as paid...');
+      try {
+        await mockContractInteraction('markPaid');
+        setStatusMessage('Ticket marked as paid successfully!');
+        e.target.reset();
+      } catch (error) {
+        console.error("Failed to mark paid:", error);
+        setStatusMessage('Failed to mark paid. Check console for details.');
+      }
+    };
+
+    const handleViewSubmit = async (e) => {
+      e.preventDefault();
+      setStatusMessage('Searching for tickets...');
+      viewedTickets = [];
+      const id = document.getElementById('view-id').value;
+      const licenseHash = document.getElementById('view-license').value;
+      const officerAddress = document.getElementById('view-officer').value;
+
+      try {
+        if (id) {
+          const ticket = mockTickets.find(t => t.id === parseInt(id));
+          if (ticket) {
+            viewedTickets = [ticket];
+          } else {
+            setStatusMessage("Ticket not found.");
+          }
+        } else if (licenseHash) {
+          viewedTickets = mockTickets.filter(t => t.licenseHash === licenseHash);
+        } else if (officerAddress) {
+          viewedTickets = mockTickets.filter(t => t.officer === officerAddress);
+        }
+        renderViewResults();
+        setStatusMessage('Search complete.');
+      } catch (error) {
+        console.error("Failed to search:", error);
+        setStatusMessage('Failed to search tickets. Check console for details.');
+      }
+    };
+
+    const renderViewResults = () => {
+      const resultsContainer = document.getElementById('view-results');
+      resultsContainer.innerHTML = '';
+      if (viewedTickets.length > 0) {
+        viewedTickets.forEach(ticket => {
+          const ticketEl = document.createElement('div');
+          ticketEl.className = "p-4 border border-gray-200 rounded-lg shadow-sm bg-white";
+          ticketEl.innerHTML = `
+            <p><strong>ID:</strong> ${ticket.id}</p>
+            <p><strong>Status:</strong> <span class="font-bold ${ticket.paid ? 'text-green-600' : 'text-red-600'}">${ticket.paid ? 'Paid' : 'Unpaid'}</span></p>
+            <p><strong>License Hash:</strong> ${ticket.licenseHash}</p>
+            <p><strong>Violation:</strong> ${ticket.violationType}</p>
+            <p><strong>Officer:</strong> ${ticket.officer}</p>
+            <p><strong>Amount:</strong> $${ticket.amount}</p>
+          `;
+          resultsContainer.appendChild(ticketEl);
+        });
+      } else {
+        resultsContainer.innerHTML = '<p class="text-gray-500">No tickets found.</p>';
+      }
+    };
+
+    const handleAdminAction = async (action) => {
+      setStatusMessage(`Executing admin action: ${action}...`);
+      try {
+        await mockContractInteraction(action);
+        setStatusMessage(`Admin action "${action}" successful!`);
+        if (action === 'pause' || action === 'unpause') {
+          isPaused = !isPaused;
+          renderPanel(); // Re-render to update the button text
+        }
+      } catch (error) {
+        console.error("Failed to perform admin action:", error);
+        setStatusMessage('Failed to perform admin action. Check console for details.');
+      }
+    };
+
+    // --- Initialization ---
+    document.addEventListener('DOMContentLoaded', () => {
+      connectWalletBtn.addEventListener('click', connectWallet);
+      document.getElementById('issue-tab').addEventListener('click', () => setActiveTab('issue'));
+      document.getElementById('paid-tab').addEventListener('click', () => setActiveTab('paid'));
+      document.getElementById('view-tab').addEventListener('click', () => setActiveTab('view'));
+      document.getElementById('admin-tab').addEventListener('click', () => setActiveTab('admin'));
+      profileIconBtn.addEventListener('click', (e) => {
+        e.stopPropagation(); // Prevents the document click event from firing
+        toggleProfilePopover();
+      });
+
+      // Close popover when clicking anywhere else on the document
+      document.addEventListener('click', (e) => {
+        if (!profilePopoverEl.contains(e.target) && !profileIconBtn.contains(e.target)) {
+          profilePopoverEl.classList.remove('scale-100', 'opacity-100');
+          profilePopoverEl.classList.add('scale-95', 'opacity-0');
+          setTimeout(() => profilePopoverEl.classList.add('hidden'), 300);
+        }
+      });
+
+      updateWalletStatus();
+      renderPanel();
+    });
+  </script>
+</body>
+</html>
